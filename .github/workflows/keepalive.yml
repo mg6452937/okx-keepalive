@@ -1,0 +1,27 @@
+name: okx-keepalive
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: keepalive loop
+        env:
+          INSTABOX_KEY: ${{ secrets.INSTABOX_KEY }}
+          MACHINE_ID: ${{ secrets.MACHINE_ID }}
+        run: |
+          curl -sS -o /dev/null -X POST -H "X-API-Key: $INSTABOX_KEY" "https://api.instabox.sh/v1/machines/$MACHINE_ID/wake" || true
+          end=$((SECONDS + 350*60))
+          while [ $SECONDS -lt $end ]; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 -X POST \
+              -H "X-API-Key: $INSTABOX_KEY" -H 'Content-Type: application/json' \
+              -d '{"cmd":"date -u +%H:%M; export PATH=/data/home/.local/bin:/opt/npm/bin:$PATH; HOME=/data/home PATH=$PATH:/data/home/.local/bin:/opt/npm/bin onchainos agent tasks 2>/dev/null | head -3"}' \
+              "https://api.instabox.sh/v1/machines/$MACHINE_ID/exec") || code=000
+            echo "$(date -u '+%F %T') ping_code=$code"
+            sleep 300
+          done
+          echo "handoff done, next scheduled job takes over"
