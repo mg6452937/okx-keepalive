@@ -4,10 +4,14 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: keepalive
+  cancel-in-progress: true
+
 jobs:
   keepalive:
     runs-on: ubuntu-latest
-    timeout-minutes: 355
+    timeout-minutes: 320
     steps:
       - name: wake + keepalive loop
         env:
@@ -15,6 +19,8 @@ jobs:
           MACHINE_ID: ${{ secrets.MACHINE_ID }}
           SSH_TOKEN: ${{ secrets.INSTABOX_SSH_TOKEN }}
         run: |
+          # graceful exit if the runner sends us a shutdown signal
+          trap 'echo "caught shutdown signal, exiting cleanly"; exit 0' TERM INT
           # wake phase: handle 409 machine_cooldown by retrying up to 25 min
           for i in $(seq 1 25); do
             code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
@@ -26,7 +32,8 @@ jobs:
             case "$state" in '"state":"running"') break;; esac
             sleep 60
           done
-          end=$((SECONDS + 340*60))
+          # self-finish at 5h (300 min), well below the 6h platform cap
+          end=$((SECONDS + 300*60))
           while [ $SECONDS -lt $end ]; do
             out=$(ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -o ConnectTimeout=45 "$SSH_TOKEN@ssh.instabox.sh" 'date -u' 2>/dev/null) && ok=ssh || ok=fail
