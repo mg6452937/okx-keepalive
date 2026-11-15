@@ -1,0 +1,32 @@
+name: qa-awake
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: qa-awake
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: keep machine awake for marketplace QA
+        env:
+          INSTABOX_KEY: ${{ secrets.INSTABOX_KEY }}
+          MACHINE_ID: ${{ secrets.MACHINE_ID }}
+        run: |
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
+            -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/start" \
+            -H "X-API-Key: $INSTABOX_KEY" \
+            -H "Idempotency-Key: qa-$(date -u +%F)-$(date -u +%H%M)") || code=000
+          state=$(curl -sS --max-time 60 -H "X-API-Key: $INSTABOX_KEY" \
+            "https://api.instabox.sh/v1/machines/$MACHINE_ID" | grep -o '"state":"[a-z]*"' | head -1)
+          ping=$(curl -sS --max-time 90 -o /dev/null -w '%{http_code}' -X POST \
+            -H "X-API-Key: $INSTABOX_KEY" -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: qa-ping-$(date -u +%s)" \
+            -d '{"cmd":"date -u"}' \
+            "https://api.instabox.sh/v1/machines/$MACHINE_ID/exec") || ping=000
+          echo "$(date -u '+%F %T') start=$code $state ping=$ping"
