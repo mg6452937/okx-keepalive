@@ -21,17 +21,19 @@ jobs:
         run: |
           # graceful exit if the runner sends us a shutdown signal
           trap 'echo "caught shutdown signal, exiting cleanly"; exit 0' TERM INT
-          # wake phase: handle 409 machine_cooldown by retrying up to 25 min
-          for i in $(seq 1 25); do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
-              -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/wake" \
-              -H "X-API-Key: $INSTABOX_KEY") || code=000
-            state=$(curl -sS --max-time 60 -H "X-API-Key: $INSTABOX_KEY" \
-              "https://api.instabox.sh/v1/machines/$MACHINE_ID" | grep -o '"state":"[a-z]*"' | head -1)
-            echo "wake try $i code=$code state=$state"
-            case "$state" in '"state":"running"') break;; esac
-            sleep 60
-          done
+          # wake phase: /wake is broken upstream (409 machine_not_running);
+# /start with an Idempotency-Key is the working way to boot the machine
+for i in $(seq 1 25); do
+  code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
+    -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/start" \
+    -H "X-API-Key: $INSTABOX_KEY" \
+    -H "Idempotency-Key: ka-start-$(date -u +%s)-$i") || code=000
+  state=$(curl -sS --max-time 60 -H "X-API-Key: $INSTABOX_KEY" \
+    "https://api.instabox.sh/v1/machines/$MACHINE_ID" | grep -o '"state":"[a-z]*"' | head -1)
+  echo "start try $i code=$code state=$state"
+  case "$state" in '"state":"running"') break;; esac
+  sleep 60
+done
           # self-finish at 5h (300 min), well below the 6h platform cap
           end=$((SECONDS + 300*60))
           while [ $SECONDS -lt $end ]; do
