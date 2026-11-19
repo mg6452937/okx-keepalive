@@ -1,32 +1,67 @@
 name: qa-awake
+
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 concurrency:
   group: qa-awake
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 350
     steps:
-      - name: keep machine awake for marketplace QA
+      - name: keep the box awake, nap once per run, then chain the next job
         env:
           INSTABOX_KEY: ${{ secrets.INSTABOX_KEY }}
           MACHINE_ID: ${{ secrets.MACHINE_ID }}
+          KEEPALIVE_PAT: ${{ secrets.KEEPALIVE_PAT }}
         run: |
-          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
-            -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/start" \
-            -H "X-API-Key: $INSTABOX_KEY" \
-            -H "Idempotency-Key: qa-$(date -u +%F)-$(date -u +%H%M)") || code=000
-          state=$(curl -sS --max-time 60 -H "X-API-Key: $INSTABOX_KEY" \
-            "https://api.instabox.sh/v1/machines/$MACHINE_ID" | grep -o '"state":"[a-z]*"' | head -1)
-          ping=$(curl -sS --max-time 90 -o /dev/null -w '%{http_code}' -X POST \
-            -H "X-API-Key: $INSTABOX_KEY" -H 'Content-Type: application/json' \
-            -H "Idempotency-Key: qa-ping-$(date -u +%s)" \
-            -d '{"cmd":"date -u"}' \
-            "https://api.instabox.sh/v1/machines/$MACHINE_ID/exec") || ping=000
-          echo "$(date -u '+%F %T') start=$code $state ping=$ping"
+          set -u
+          API="https://api.instabox.sh/v1/machines/$MACHINE_ID"
+
+          machine_get() {
+            curl -sS --max-time 30 -H "X-API-Key: $INSTABOX_KEY" "$API" > /tmp/m.json || true
+          }
+
+          machine_call() {
+            curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -X POST \
+              -H "X-API-Key: $INSTABOX_KEY" -H 'Content-Type: application/json' \
+              -H "Idempotency-Key: $2" "$API/$1" || echo 000
+          }
+
+          deadline=$(( $(date -u +%s) + 19200 ))
+          napped=0
+          while [ "$(date -u +%s)" -lt "$deadline" ]; do
+            machine_get
+            state=$(grep -o '"state":"[a-z]*"' /tmp/m.json | head -1 | cut -d'"' -f4)
+            started=$(grep -o '"runStartedAt":"[^"]*"' /tmp/m.json | head -1 | cut -d'"' -f4)
+            auto=$(grep -c '"autoSuspendedAt"' /tmp/m.json || true)
+            if [ "$state" = "paused" ] && [ "$auto" = "0" ]; then
+              echo "$(date -u '+%F %T') manually paused, skipping ping"
+            else
+              code=$(machine_call exec "ping-$(date -u +%s)")
+              echo "$(date -u '+%F %T') state=$state nap=$napped ping=$code"
+            fi
+            if [ "$napped" = "0" ] && [ -n "$started" ]; then
+              age=$(( $(date -u +%s) - $(date -u -d "$started" +%s) ))
+              if [ "$age" -gt 23400 ]; then
+                echo "$(date -u '+%F %T') run age ${age}s, taking a 10 min nap"
+                echo "suspend=$(machine_call suspend "nap-s-$(date -u +%s)")"
+                sleep 600
+                echo "resume=$(machine_call resume "nap-r-$(date -u +%s)")"
+                napped=1
+              fi
+            fi
+            sleep 540
+          done
+
+          echo "chaining the next run"
+          curl -sS -o /dev/null -w 'dispatch=%{http_code}\n' --max-time 60 -X POST \
+            -H "Authorization: Bearer $KEEPALIVE_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/qa-awake.yml/dispatches" \
+            -d '{"ref":"main"}'
