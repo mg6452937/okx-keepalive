@@ -27,10 +27,17 @@ jobs:
             curl -sS --max-time 30 -H "X-API-Key: $INSTABOX_KEY" "$API" > /tmp/m.json || true
           }
 
-          machine_call() {
+          ping_machine() {
             curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -X POST \
               -H "X-API-Key: $INSTABOX_KEY" -H 'Content-Type: application/json' \
-              -H "Idempotency-Key: $2" "$API/$1" || echo 000
+              -H "Idempotency-Key: ping-$(date -u +%s)-$RANDOM" \
+              -d '{"cmd":"date -u"}' "$API/exec" || echo 000
+          }
+
+          lifecycle() {
+            curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -X POST \
+              -H "X-API-Key: $INSTABOX_KEY" \
+              -H "Idempotency-Key: $1-$(date -u +%s)" "$API/$1" || echo 000
           }
 
           deadline=$(( $(date -u +%s) + 19200 ))
@@ -43,16 +50,16 @@ jobs:
             if [ "$state" = "paused" ] && [ "$auto" = "0" ]; then
               echo "$(date -u '+%F %T') manually paused, skipping ping"
             else
-              code=$(machine_call exec "ping-$(date -u +%s)")
+              code=$(ping_machine)
               echo "$(date -u '+%F %T') state=$state nap=$napped ping=$code"
             fi
             if [ "$napped" = "0" ] && [ -n "$started" ]; then
               age=$(( $(date -u +%s) - $(date -u -d "$started" +%s) ))
               if [ "$age" -gt 23400 ]; then
                 echo "$(date -u '+%F %T') run age ${age}s, taking a 10 min nap"
-                echo "suspend=$(machine_call suspend "nap-s-$(date -u +%s)")"
+                echo "suspend=$(lifecycle suspend)"
                 sleep 600
-                echo "resume=$(machine_call resume "nap-r-$(date -u +%s)")"
+                echo "resume=$(lifecycle resume)"
                 napped=1
               fi
             fi
